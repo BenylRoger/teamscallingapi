@@ -3,6 +3,7 @@ using Microsoft.Graph;
 using Microsoft.Graph.Models;
 using Microsoft.Graph.Communications.Calls.Item.Answer;
 using Microsoft.Graph.Communications.Calls.Item.Reject;
+using Microsoft.Graph.Communications.Calls.Item.PlayPrompt;
 
 namespace TeamsCallApi.Services;
 
@@ -148,6 +149,41 @@ public class GraphService
         catch (Microsoft.Graph.Models.ODataErrors.ODataError ex)
         {
             _logger.LogError("[GraphService] HangUp error: {Code} - {Message}",
+                ex.Error?.Code, ex.Error?.Message);
+            throw;
+        }
+    }
+
+    // ─── Play audio prompt on an established call ─────────────────────────────
+
+    public async Task PlayPromptAsync(string callId, string audioUrl)
+    {
+        _logger.LogInformation("[GraphService] Playing audio on call {CallId}", callId);
+
+        try
+        {
+            var requestBody = new PlayPromptPostRequestBody
+            {
+                Prompts = new List<Prompt?>
+                {
+                    new MediaPrompt
+                    {
+                        OdataType = "#microsoft.graph.mediaPrompt",
+                        MediaInfo = new MediaInfo
+                        {
+                            Uri         = audioUrl,
+                            ResourceId  = Guid.NewGuid().ToString()
+                        }
+                    }
+                }
+            };
+
+            await _graphClient.Communications.Calls[callId].PlayPrompt.PostAsync(requestBody);
+            _logger.LogInformation("[GraphService] Audio playing on call {CallId}", callId);
+        }
+        catch (Microsoft.Graph.Models.ODataErrors.ODataError ex)
+        {
+            _logger.LogError("[GraphService] PlayPrompt error: {Code} - {Message}",
                 ex.Error?.Code, ex.Error?.Message);
             throw;
         }

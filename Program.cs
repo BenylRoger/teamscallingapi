@@ -11,7 +11,8 @@ builder.Logging.ClearProviders();
 builder.Logging.AddConsole();
 
 var app = builder.Build();
-
+// Serve static audio files from wwwroot/audio/
+app.UseStaticFiles();
 app.UseRouting();
 app.MapControllers();
 
