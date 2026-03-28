@@ -1,6 +1,5 @@
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.Graph.Communications.Calls.Item.Reject;
-using TeamsCallApi.Models;
+using System.Text.Json;
 using TeamsCallApi.Services;
 
 namespace TeamsCallApi.Controllers;
@@ -18,101 +17,132 @@ public class CallbackController : ControllerBase
         GraphService graphService,
         IConfiguration configuration)
     {
-        _logger        = logger;
-        _graphService  = graphService;
+        _logger       = logger;
+        _graphService = graphService;
         _configuration = configuration;
     }
 
-    /// <summary>
-    /// POST /api/calls
-    /// Receives all call state notifications from Microsoft Graph.
-    /// Handles: incoming, establishing, established, terminated
-    /// </summary>
     [HttpPost]
-    public async Task<IActionResult> HandleCallback([FromBody] CallbackPayload payload)
+    public async Task<IActionResult> HandleCallback()
     {
-        if (payload?.Value == null || !payload.Value.Any())
+        // Read raw body
+        using var reader = new StreamReader(Request.Body);
+        var rawBody = await reader.ReadToEndAsync();
+
+        _logger.LogInformation("=== [Graph Callback Raw] ===");
+        _logger.LogInformation("{RawBody}", rawBody);
+        _logger.LogInformation("============================");
+
+        try
         {
-            _logger.LogWarning("[Callback] Empty or null payload received");
-            return Ok();
-        }
+            var json = JsonDocument.Parse(rawBody);
+            var root = json.RootElement;
 
-        foreach (var notification in payload.Value)
-        {
-            var callId    = notification.ResourceData?.Id;
-            var state     = notification.ResourceData?.State?.ToLower();
-            var direction = notification.ResourceData?.Direction?.ToLower();
-
-            _logger.LogInformation("=== [Graph Callback] ===");
-            _logger.LogInformation("Change Type : {ChangeType}", notification.ChangeType);
-            _logger.LogInformation("Call ID     : {CallId}", callId);
-            _logger.LogInformation("State       : {State}", state);
-            _logger.LogInformation("Direction   : {Direction}", direction);
-            _logger.LogInformation("========================");
-
-            if (string.IsNullOrEmpty(callId)) continue;
-
-            // Handle each call state
-            switch (state)
+            // Graph sends { "value": [ { "resourceData": { "id": "", "state": "" } } ] }
+            if (root.TryGetProperty("value", out var valueArray))
             {
-                case "incoming":
-                    await HandleIncomingCall(callId, direction);
-                    break;
+                foreach (var notification in valueArray.EnumerateArray())
+                {
+                    string? callId = null;
+                    string? state  = null;
 
-                case "establishing":
-                    _logger.LogInformation("[Callback] Call {CallId} is establishing...", callId);
-                    break;
+                    // ✅ Extract callId from resource URL path
+                    // e.g. "/app/calls/01004980-be37-40a2-a500-15ed0b24a585"
+                    if (notification.TryGetProperty("resource", out var resource))
+                    {
+                        var resourcePath = resource.GetString();
+                        callId = resourcePath?.Split('/').LastOrDefault();
+                    }
 
-                case "established":
-                    _logger.LogInformation("[Callback] Call {CallId} is established ✅", callId);
-                    await HandleEstablishedCall(callId);
-                    break;
+                    if (notification.TryGetProperty("resourceData", out var resourceData))
+                    {
+                        state = resourceData.TryGetProperty("state", out var stateVal)
+                            ? stateVal.GetString()?.ToLower() : null;
+                    }
 
-                case "terminated":
-                    _logger.LogInformation("[Callback] Call {CallId} has terminated ❌", callId);
-                    break;
+                    _logger.LogInformation("[Callback] CallId: {CallId} | State: {State}", callId, state);
 
-                default:
-                    _logger.LogInformation("[Callback] Unhandled state: {State}", state);
-                    break;
+                    if (string.IsNullOrEmpty(callId)) continue;
+
+                    switch (state)
+                    {
+                        case "incoming":
+                            await HandleIncomingCall(callId);
+                            break;
+
+                        case "establishing":
+                            _logger.LogInformation("[Callback] Call {CallId} establishing...", callId);
+                            break;
+
+                        case "established":
+                            // Only trigger once when audio becomes active
+                            if (resourceData.TryGetProperty("mediaState", out var mediaState))
+                            {
+                                if (mediaState.TryGetProperty("audio", out var audio) &&
+                                    audio.GetString() == "active")
+                                {
+                                    _logger.LogInformation("[Callback] Audio active on call {CallId} ✅ — playing prompt", callId);
+                                    await HandleEstablishedCall(callId);
+                                }
+                            }
+                            else
+                            {
+                                _logger.LogInformation("[Callback] Call {CallId} established — waiting for audio active", callId);
+                            }
+                            break;
+
+                        case "terminated":
+                            _logger.LogInformation("[Callback] Call {CallId} terminated ❌", callId);
+                            break;
+
+                        default:
+                            _logger.LogInformation("[Callback] Unknown state: {State}", state);
+                            break;
+                    }
+                }
             }
         }
+        catch (Exception ex)
+        {
+            _logger.LogError("[Callback] Failed to parse payload: {Message}", ex.Message);
+        }
 
-        // Always return 200 OK — Graph will retry if you don't
+        // Always return 200 OK
         return Ok();
     }
 
-    // ─── Handle incoming call (bot receives a call) ───────────────────────────
-
-    private async Task HandleIncomingCall(string callId, string? direction)
+    private async Task HandleIncomingCall(string callId)
     {
-        // Read behavior from config: "answer" or "reject"
         var behavior = _configuration["Graph:IncomingCallBehavior"] ?? "answer";
-
-        _logger.LogInformation("[Callback] Incoming call {CallId} — behavior: {Behavior}", callId, behavior);
+        _logger.LogInformation("[Callback] Incoming call — behavior: {Behavior}", behavior);
 
         if (behavior == "answer")
-        {
             await _graphService.AnswerCallAsync(callId);
-        }
         else
-        {
-           await _graphService.RejectCallAsync(callId);
-        }
+            await _graphService.RejectCallAsync(callId);
     }
-
-    // ─── Handle established call ──────────────────────────────────────────────
 
     private async Task HandleEstablishedCall(string callId)
     {
-        // Auto hang up after call is established (optional)
-        var autoHangUp = _configuration.GetValue<bool>("Graph:AutoHangUpOnEstablished");
+        var audioUrl = _configuration["Graph:AudioPromptUrl"];
 
-        if (autoHangUp)
+        if (!string.IsNullOrEmpty(audioUrl))
         {
-            _logger.LogInformation("[Callback] Auto hang up enabled — ending call {CallId}", callId);
-            await Task.Delay(3000); // Wait 3 seconds then hang up
-            await _graphService.HangUpCallAsync(callId);
+            try
+            {
+                await _graphService.PlayPromptAsync(callId, audioUrl);
+
+                var waitSeconds = _configuration.GetValue<int>("Graph:AudioWaitSeconds", 10);
+                _logger.LogInformation("[Callback] Waiting {Seconds}s for audio to finish...", waitSeconds);
+                await Task.Delay(TimeSpan.FromSeconds(waitSeconds));
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError("[Callback] Audio play failed: {Message}", ex.Message);
+            }
         }
+
+        _logger.LogInformation("[Callback] Ending call {CallId}", callId);
+        await _graphService.HangUpCallAsync(callId);
     }
 }
