@@ -28,9 +28,9 @@ public class CallController : ControllerBase
     [HttpPost("make-call")]
     public async Task<IActionResult> MakeCall()
     {
-        var callbackUrl  = _configuration["Graph:CallbackUrl"]!;
-        var botId        = _configuration["Graph:BotId"]!;
-        var targetUserId = _configuration["Graph:TargetUserId"]!;
+        var callbackUrl  = _configuration["Graph:CallbackUrl"];
+        var botId        = _configuration["Graph:BotId"];
+        var targetUserId = _configuration["Graph:TargetUserId"];
 
         _logger.LogInformation("[MakeCall] Initiating Teams call to user {UserId}", targetUserId);
 

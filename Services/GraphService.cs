@@ -18,9 +18,9 @@ public class GraphService
         _configuration = configuration;
         _logger = logger;
 
-        var tenantId     = _configuration["AzureAd:TenantId"]!;
-        var clientId     = _configuration["AzureAd:ClientId"]!;
-        var clientSecret = _configuration["AzureAd:ClientSecret"]!;
+        var tenantId     = _configuration["AzureAd:TenantId"];
+        var clientId     = _configuration["AzureAd:ClientId"];
+        var clientSecret = _configuration["AzureAd:ClientSecret"];
 
         var credential = new ClientSecretCredential(tenantId, clientId, clientSecret);
         _graphClient = new GraphServiceClient(credential);
@@ -32,7 +32,7 @@ public class GraphService
     {
         _logger.LogInformation("[GraphService] Initiating call to user {UserId}", targetUserId);
 
-        var tenantId = _configuration["AzureAd:TenantId"]!;
+        var tenantId = _configuration["AzureAd:TenantId"];
 
         var call = new Call
         {
@@ -95,7 +95,7 @@ public class GraphService
         {
             var requestBody = new AnswerPostRequestBody
             {
-                CallbackUri = _configuration["Graph:CallbackUrl"]!,
+                CallbackUri = _configuration["Graph:CallbackUrl"],
                 MediaConfig = new ServiceHostedMediaConfig(),
                 AcceptedModalities = new List<Modality?> { Modality.Audio }
             };
